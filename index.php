@@ -73,6 +73,10 @@ if (getenv('OCI_MAX_INSTANCES') !== false) {
 
 $instances = $api->getInstances($config);
 
+// DEBUG: Print instances to see what the API returns
+file_put_contents('php://stdout', "DEBUG INSTANCES:\n" . json_encode($instances, JSON_PRETTY_PRINT) . "\n");
+file_put_contents('php://stdout', "DEBUG CONFIG DESIRED: ocpus={$config->ocpus}, memory={$config->memoryInGBs}\n");
+
 $existingInstances = $api->checkExistingInstances($config, $instances, $shape, $maxRunningInstancesOfThatShape);
 if ($existingInstances) {
     echo "$existingInstances\n";
