@@ -134,10 +134,35 @@ EOD;
 
     public function checkExistingInstances(OciConfig $config, array $listResponse, string $shape, int $maxRunningInstancesOfThatShape): string
     {
-        $this->existingInstances = array_filter($listResponse, function ($instance) use ($shape) {
-//        $unacceptableStates = ['RUNNING', 'PROVISIONING', 'STARTING', 'STOPPED', 'STOPPING', 'TERMINATING'];
+        // Keep instances that:
+        // - Are not in the TERMINATED state
+        // - Have the same shape string
+        // - If they have shapeConfig (flex shapes), their ocpus and memory must match desired values to count as blocking
+        $desiredOcpus = (int) $config->ocpus;
+        $desiredMemory = (int) $config->memoryInGBs;
+
+        $this->existingInstances = array_filter($listResponse, function ($instance) use ($shape, $desiredOcpus, $desiredMemory) {
             $acceptableStates = ['TERMINATED'];
-            return !in_array($instance['lifecycleState'], $acceptableStates) && $instance['shape'] === $shape;
+            if (in_array($instance['lifecycleState'], $acceptableStates, true)) {
+                // terminated instances do not block
+                return false;
+            }
+
+            if (!isset($instance['shape']) || $instance['shape'] !== $shape) {
+                // shape mismatch -> does not block
+                return false;
+            }
+
+            // If instance has shapeConfig => it's a flexible shape. Only block if ocpus & memory match.
+            if (!empty($instance['shapeConfig']) && is_array($instance['shapeConfig'])) {
+                $instOcpus = (int) ($instance['shapeConfig']['ocpus'] ?? 0);
+                $instMemory = (int) ($instance['shapeConfig']['memoryInGBs'] ?? 0);
+
+                return $instOcpus === $desiredOcpus && $instMemory === $desiredMemory;
+            }
+
+            // Non-flex shapes: shape match is enough to block.
+            return true;
         });
 
         if (count($this->existingInstances) < $maxRunningInstancesOfThatShape) {
@@ -145,12 +170,12 @@ EOD;
         }
 
         $displayNames = array_map(function ($instance) {
-            return $instance['displayName'];
+            return $instance['displayName'] ?? '(unknown)';
         }, $this->existingInstances);
         $displayNamesString = implode(', ', $displayNames);
 
         $lifecycleStates = array_map(function ($instance) {
-            return $instance['lifecycleState'];
+            return $instance['lifecycleState'] ?? '(unknown)';
         }, $this->existingInstances);
         $lifecycleStatesString = implode(', ', $lifecycleStates);
 
