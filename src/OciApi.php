@@ -134,44 +134,36 @@ EOD;
 
     public function checkExistingInstances(OciConfig $config, array $listResponse, string $shape, int $maxRunningInstancesOfThatShape): string
     {
-        // States that are considered "stable running" (block new instance creation)
-        $stableRunningStates = ['RUNNING'];
+        // فقط الـ RUNNING تحجز الـ slot
+        $blockingStates = ['RUNNING'];
         
-        // States that are considered temporary/transitional (do NOT block)
-        $temporaryStates = ['PROVISIONING', 'STARTING', 'STOPPING', 'STOPPED', 'TERMINATING'];
-        
-        // Keep instances that:
-        // - Are RUNNING and stable (not in temporary states)
-        // - Have the same shape string
-        // - If they have shapeConfig (flex shapes), their ocpus and memory must match desired values to count as blocking
         $desiredOcpus = (int) $config->ocpus;
         $desiredMemory = (int) $config->memoryInGBs;
 
-        $this->existingInstances = array_filter($listResponse, function ($instance) use ($shape, $desiredOcpus, $desiredMemory, $stableRunningStates, $temporaryStates) {
+        // فلتر الـ instances:
+        // 1. نفس الـ shape بالضبط
+        // 2. حالة RUNNING (غير ذلك ما تحجز)
+        // 3. نفس الـ ocpus والـ memory (للـ Flex shapes)
+        $this->existingInstances = array_filter($listResponse, function ($instance) use ($shape, $desiredOcpus, $desiredMemory, $blockingStates) {
             $state = $instance['lifecycleState'] ?? 'UNKNOWN';
+            $instanceShape = $instance['shape'] ?? '';
             
-            // Terminated instances do not block
+            // shape مختلفة = ما تحجز
+            if ($instanceShape !== $shape) {
+                return false;
+            }
+            
+            // حالة TERMINATED = ما تحجز
             if ($state === 'TERMINATED') {
                 return false;
             }
             
-            // Temporary/transitional states do not block - allow new instance creation
-            if (in_array($state, $temporaryStates, true)) {
+            // غير RUNNING = ما تحجز (PROVISIONING, STOPPED, وغيرها)
+            if (!in_array($state, $blockingStates, true)) {
                 return false;
             }
 
-            if (!isset($instance['shape']) || $instance['shape'] !== $shape) {
-                // shape mismatch -> does not block
-                return false;
-            }
-
-            // Only check if instance is in a stable running state
-            if (!in_array($state, $stableRunningStates, true)) {
-                // Unknown or unexpected state - be conservative and don't block
-                return false;
-            }
-
-            // If instance has shapeConfig => it's a flexible shape. Only block if ocpus & memory match.
+            // للـ Flex shapes: تحقق من الـ config
             if (!empty($instance['shapeConfig']) && is_array($instance['shapeConfig'])) {
                 $instOcpus = (int) ($instance['shapeConfig']['ocpus'] ?? 0);
                 $instMemory = (int) ($instance['shapeConfig']['memoryInGBs'] ?? 0);
@@ -179,7 +171,7 @@ EOD;
                 return $instOcpus === $desiredOcpus && $instMemory === $desiredMemory;
             }
 
-            // Non-flex shapes in RUNNING state: shape match is enough to block.
+            // Non-flex shapes في RUNNING = تحجز
             return true;
         });
 
@@ -188,16 +180,16 @@ EOD;
         }
 
         $displayNames = array_map(function ($instance) {
-            return $instance['displayName'] ?? '(unknown)';
+            return $instance['displayName'] ?? '(غير معروف)';
         }, $this->existingInstances);
         $displayNamesString = implode(', ', $displayNames);
 
         $lifecycleStates = array_map(function ($instance) {
-            return $instance['lifecycleState'] ?? '(unknown)';
+            return $instance['lifecycleState'] ?? '(غير معروف)';
         }, $this->existingInstances);
         $lifecycleStatesString = implode(', ', $lifecycleStates);
 
-        return "Already have an instance(s) [$displayNamesString] in state(s) (respectively) [$lifecycleStatesString]. User: $config->ociUserId\n";
+        return "لدينا بالفعل {$maxRunningInstancesOfThatShape} instance(s) من نوع {$shape} في حالة RUNNING. المستخدم: $config->ociUserId\n";
     }
 
     /**
