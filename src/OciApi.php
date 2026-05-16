@@ -134,22 +134,40 @@ EOD;
 
     public function checkExistingInstances(OciConfig $config, array $listResponse, string $shape, int $maxRunningInstancesOfThatShape): string
     {
+        // States that are considered "stable running" (block new instance creation)
+        $stableRunningStates = ['RUNNING'];
+        
+        // States that are considered temporary/transitional (do NOT block)
+        $temporaryStates = ['PROVISIONING', 'STARTING', 'STOPPING', 'STOPPED', 'TERMINATING'];
+        
         // Keep instances that:
-        // - Are not in the TERMINATED state
+        // - Are RUNNING and stable (not in temporary states)
         // - Have the same shape string
         // - If they have shapeConfig (flex shapes), their ocpus and memory must match desired values to count as blocking
         $desiredOcpus = (int) $config->ocpus;
         $desiredMemory = (int) $config->memoryInGBs;
 
-        $this->existingInstances = array_filter($listResponse, function ($instance) use ($shape, $desiredOcpus, $desiredMemory) {
-            $acceptableStates = ['TERMINATED'];
-            if (in_array($instance['lifecycleState'], $acceptableStates, true)) {
-                // terminated instances do not block
+        $this->existingInstances = array_filter($listResponse, function ($instance) use ($shape, $desiredOcpus, $desiredMemory, $stableRunningStates, $temporaryStates) {
+            $state = $instance['lifecycleState'] ?? 'UNKNOWN';
+            
+            // Terminated instances do not block
+            if ($state === 'TERMINATED') {
+                return false;
+            }
+            
+            // Temporary/transitional states do not block - allow new instance creation
+            if (in_array($state, $temporaryStates, true)) {
                 return false;
             }
 
             if (!isset($instance['shape']) || $instance['shape'] !== $shape) {
                 // shape mismatch -> does not block
+                return false;
+            }
+
+            // Only check if instance is in a stable running state
+            if (!in_array($state, $stableRunningStates, true)) {
+                // Unknown or unexpected state - be conservative and don't block
                 return false;
             }
 
@@ -161,7 +179,7 @@ EOD;
                 return $instOcpus === $desiredOcpus && $instMemory === $desiredMemory;
             }
 
-            // Non-flex shapes: shape match is enough to block.
+            // Non-flex shapes in RUNNING state: shape match is enough to block.
             return true;
         });
 
